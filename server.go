@@ -64,6 +64,7 @@ const (
 	listenerAddressForServeHTTP = "listenerAddressForServeHTTP"
 )
 
+// main パッケージに書かれていない init 関数はそのパッケージが import されたタイミングで実行される。
 func init() {
 	internal.GetServerCredentials = func(srv *Server) credentials.TransportCredentials {
 		return srv.opts.creds
@@ -116,6 +117,7 @@ type serviceInfo struct {
 }
 
 // Server is a gRPC server to serve RPC requests.
+// 重要な構造体
 type Server struct {
 	opts serverOptions
 
@@ -201,8 +203,8 @@ type EmptyServerOption struct{}
 
 func (EmptyServerOption) apply(*serverOptions) {}
 
-// funcServerOption wraps a function that modifies serverOptions into an
-// implementation of the ServerOption interface.
+// funcServerOption wraps a function that modifies serverOptions into an implementation of the ServerOption interface.
+// funcServerOptionは、serverOptionsを変更する関数をラップして、ServerOptionインターフェースの実装になります。
 type funcServerOption struct {
 	f func(*serverOptions)
 }
@@ -217,8 +219,8 @@ func newFuncServerOption(f func(*serverOptions)) *funcServerOption {
 	}
 }
 
-// joinServerOption provides a way to combine arbitrary number of server
-// options into one.
+// joinServerOption provides a way to combine arbitrary number of server options into one.
+// joinServerOptionは、任意の数のサーバーオプションを1つに結合する方法を提供します。
 type joinServerOption struct {
 	opts []ServerOption
 }
@@ -251,6 +253,9 @@ func SharedWriteBuffer(val bool) ServerOption {
 // on the wire. The default value for this buffer is 32KB. Zero or negative
 // values will disable the write buffer such that each write will be on underlying
 // connection. Note: A Send call may not directly translate to a write.
+// WriteBufferSizeは、ワイヤ上で書き込みを行う前にバッチ処理できるデータ量を決定します。
+// このバッファのデフォルト値は32KBです。ゼロまたは負の値は、書き込みバッファを無効にし、
+// それにより各書き込みが基礎となる接続上で行われるようになります。注意：Send呼び出しは直接書き込みに変換されない場合があります。
 func WriteBufferSize(s int) ServerOption {
 	return newFuncServerOption(func(o *serverOptions) {
 		o.writeBufferSize = s
@@ -641,6 +646,7 @@ func (s *Server) serverWorker() {
 
 // initServerWorkers creates worker goroutines and a channel to process incoming
 // connections to reduce the time spent overall on runtime.morestack.
+// 簡単に言えば、この処理は、サーバーのワーカーゴルーチンのチャネルとクローズ関数を初期化し、指定された数のワーカーゴルーチンを生成します。
 func (s *Server) initServerWorkers() {
 	s.serverWorkerChannel = make(chan func())
 	s.serverWorkerChannelClose = grpcsync.OnceFunc(func() {
@@ -651,13 +657,15 @@ func (s *Server) initServerWorkers() {
 	}
 }
 
-// NewServer creates a gRPC server which has no service registered and has not
-// started to accept requests yet.
+// NewServer creates a gRPC server which has no service registered and has not started to accept requests yet.
+// NewServerは、まだサービスが登録されておらず、リクエストを受け付ける準備ができていないgRPCサーバーを作成します。
 func NewServer(opt ...ServerOption) *Server {
 	opts := defaultServerOptions
+	// デフォルトのオプションを設定
 	for _, o := range globalServerOptions {
 		o.apply(&opts)
 	}
+	// 渡されたoptionsを設定
 	for _, o := range opt {
 		o.apply(&opts)
 	}
@@ -882,6 +890,7 @@ func (s *Server) Serve(lis net.Listener) error {
 
 	var tempDelay time.Duration // how long to sleep on accept failure
 	for {
+		// Accept waits for and returns the next connection to the listener.
 		rawConn, err := lis.Accept()
 		if err != nil {
 			if ne, ok := err.(interface {
@@ -922,6 +931,8 @@ func (s *Server) Serve(lis net.Listener) error {
 		//
 		// Make sure we account for the goroutine so GracefulStop doesn't nil out
 		// s.conns before this conn can be added.
+		// 新しい接続の処理が終了するのを待たずに、次の接続の受け入れができるようになります。
+		// 接続を受け取ったら、handleRawConn（処理を実行するgoroutineをフォークする）
 		s.serveWG.Add(1)
 		go func() {
 			s.handleRawConn(lis.Addr().String(), rawConn)
@@ -984,6 +995,8 @@ func (s *Server) newHTTP2Transport(c net.Conn) transport.ServerTransport {
 	st, err := transport.NewServerTransport(c, config)
 	if err != nil {
 		s.mu.Lock()
+		// このコードでは、s.errorfを呼び出す前にlockを取得している理由は、複数のゴルーチンが同時にこのメソッドを呼び出す可能性があるためです。
+		//s.errorfはサーバーのエラーログを出力するためのメソッドであり、ロックを取得しないと複数のゴルーチンから同時に呼び出されると、ログの出力が競合する可能性があります。
 		s.errorf("NewServerTransport(%q) failed: %v", c.RemoteAddr(), err)
 		s.mu.Unlock()
 		// ErrConnDispatched means that the connection was dispatched away from
@@ -1019,6 +1032,8 @@ func (s *Server) serveStreams(ctx context.Context, st transport.ServerTransport,
 		}
 	}()
 
+	// // atomicSemaphoreは、ブロックし、カウントするセマフォを実装しています。
+	//acquireは同期的に呼び出す必要があります。releaseは非同期に呼び出すことができます。
 	streamQuota := newHandlerQuota(s.opts.maxConcurrentStreams)
 	st.HandleStreams(ctx, func(stream *transport.Stream) {
 		s.handlersWG.Add(1)
@@ -1136,6 +1151,7 @@ func (s *Server) incrCallsFailed() {
 	s.channelz.ServerMetrics.CallsFailed.Add(1)
 }
 
+// Compressorはdepreactedだな
 func (s *Server) sendResponse(ctx context.Context, t transport.ServerTransport, stream *transport.Stream, msg any, cp Compressor, opts *transport.Options, comp encoding.Compressor) error {
 	data, err := encode(s.getCodec(stream.ContentSubtype()), msg)
 	if err != nil {
